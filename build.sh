@@ -1,4 +1,34 @@
 #!/bin/bash
+# build.sh
+
+# We keep the standard of commenting the workflow for future reference.
+
+# 1. Compile the plugin using the Makefile
+echo "[Build] Running make..."
+make all
+
+# 2. Halt the script if compilation fails
+if [ $? -ne 0 ]; then
+    echo "[Error] Compilation failed. Aborting load."
+    exit 1
+fi
+
+echo "[Build] Compilation successful."
+
+# 3. Define the absolute path to the compiled shared object
+# This ensures hyprctl knows exactly where to find the newly minted .so file
+PLUGIN_PATH="$(pwd)/HyprWindowShade.so"
+
+# 4. Unload the plugin if it is already running (suppresses errors if it isn't loaded)
+# Thanks to our explicit unhooking in PLUGIN_EXIT, this is completely safe and won't segfault Hyprland.
+echo "[Plugin] Unloading previous version..."
+hyprctl plugin unload "$PLUGIN_PATH" > /dev/null 2>&1
+
+# 5. Load the fresh plugin into the compositor
+echo "[Plugin] Loading new version..."
+hyprctl plugin load "$PLUGIN_PATH"
+
+echo "[Success] HyprWindowShade is now live!"#!/bin/bash
 
 # --- CONFIGURATION ---
 PLUGIN_NAME="HyprWindowShade"

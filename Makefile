@@ -9,7 +9,7 @@ CXX=g++
 
 # COMPILER FLAGS
 # We are dropping GLEW completely. Native GLESv2 avoids all redeclaration conflicts.
-CXXFLAGS=-shared -fPIC --optimize=3 -std=c++23 
+CXXFLAGS=-shared -fPIC -O3 -std=c++23 
 
 # INCLUDE PATHS
 # pkg-config handles base paths; we manually add protocols/include for compatibility.

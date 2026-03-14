@@ -1,9 +1,6 @@
 #!/bin/bash
 # build.sh
 
-# We keep the standard of commenting the workflow for future reference.
-
-# --- COLOR DEFINITIONS ---
 GREEN='\033[0;32m'
 RED='\033[0;31m'
 NC='\033[0m'
@@ -14,6 +11,8 @@ PLUGIN_PATH="$PLUGIN_DIR/HyprWindowShade.so"
 echo -e "${GREEN}Starting build for HyprWindowShade...${NC}"
 
 echo "[Plugin] Unloading previous version from memory..."
+# --- THE FIX: USE ABSOLUTE PATH ---
+# Hyprland strictly requires the full path to locate the plugin in memory
 hyprctl plugin unload "$PLUGIN_PATH"
 sleep 2
 
@@ -27,7 +26,7 @@ fi
 
 mkdir -p "$PLUGIN_DIR"
 echo -n "Moving HyprWindowShade.so to $PLUGIN_DIR..."
-rm -f "$PLUGIN_PATH" # CRITICAL: Delete the old file to break the Linux file-lock!
+rm -f "$PLUGIN_PATH" 
 mv "$(pwd)/HyprWindowShade.so" "$PLUGIN_PATH"
 echo -e "${GREEN}Complete!${NC}"
 

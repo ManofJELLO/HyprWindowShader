@@ -26,6 +26,10 @@
 #include <hyprland/src/event/EventBus.hpp>
 #include <hyprutils/memory/UniquePtr.hpp>
 
+// --- COMPOSITOR SUPPORT ---
+// Required to grab the currently focused window for our new toggle dispatcher!
+#include <hyprland/src/Compositor.hpp>
+
 #include <fstream>
 #include <sstream>
 #include <map>
@@ -46,6 +50,10 @@ std::map<Desktop::View::CWindow*, std::string> g_mWindowShaderMap;
 
 // Map for associating Layer Surface namespaces to shader paths
 std::map<std::string, std::string> g_mLayerNamespaceShaderMap;
+
+// --- CRITICAL FIX 58: APP CLASS MAP ---
+// Map for associating specific application classes (like "kitty") to shader paths
+std::map<std::string, std::string> g_mWindowClassShaderMap;
 
 // --- CRITICAL FIX 50: NATIVE CSHADER CACHE ---
 std::map<std::string, Hyprutils::Memory::CSharedPointer<CShader>> g_mCompiledCShaders;
@@ -96,8 +104,24 @@ Hyprutils::Memory::CWeakPointer<CShader> hkGetSurfaceShader(CHyprOpenGLImpl* thi
     
     if (window) {
         Desktop::View::CWindow* rawWin = window.get();
+        
+        // 1. Check for specific window instance overrides first
         if (g_mWindowShaderMap.find(rawWin) != g_mWindowShaderMap.end()) {
             auto customShader = getOrCompileShader(thisptr, g_mWindowShaderMap[rawWin]);
+            if (customShader && customShader->program() != 0) return customShader;
+        } 
+        
+        // 2. Fall back to checking if the entire app class is targeted
+        // --- CRITICAL FIX 59: RENAME FIXES ---
+        // Updated variable names to match v0.54.2 (m_initialClass and m_class)
+        std::string initClass = rawWin->m_initialClass;
+        std::string currentClass = rawWin->m_class;
+        
+        if (g_mWindowClassShaderMap.find(initClass) != g_mWindowClassShaderMap.end()) {
+            auto customShader = getOrCompileShader(thisptr, g_mWindowClassShaderMap[initClass]);
+            if (customShader && customShader->program() != 0) return customShader;
+        } else if (g_mWindowClassShaderMap.find(currentClass) != g_mWindowClassShaderMap.end()) {
+            auto customShader = getOrCompileShader(thisptr, g_mWindowClassShaderMap[currentClass]);
             if (customShader && customShader->program() != 0) return customShader;
         }
     } 
@@ -169,7 +193,6 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
             std::string ns = args.substr(0, spacePos);
             std::string path = args.substr(spacePos + 1);
             
-            // Trim path spaces
             size_t start = path.find_first_not_of(" \t");
             if (start != std::string::npos) path = path.substr(start);
             while (!path.empty() && (path.back() == ' ' || path.back() == '\t')) path.pop_back();
@@ -183,24 +206,108 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
         return SDispatchResult{};
     });
 
-    // --- CRITICAL FIX 56: TOGGLE DISPATCHER ---
-    // Added a dedicated toggle dispatcher to easily switch shaders on and off with a single keybind!
+    // --- CRITICAL FIX 56: TOGGLE DISPATCHER (LAYERS) ---
     HyprlandAPI::addDispatcherV2(PHANDLE, "togglelayershader", [&](std::string args) -> SDispatchResult {
         size_t spacePos = args.find_first_of(" \t");
         if (spacePos != std::string::npos) {
             std::string ns = args.substr(0, spacePos);
             std::string path = args.substr(spacePos + 1);
             
-            // Trim path spaces
             size_t start = path.find_first_not_of(" \t");
             if (start != std::string::npos) path = path.substr(start);
             while (!path.empty() && (path.back() == ' ' || path.back() == '\t')) path.pop_back();
 
-            // Toggle logic: remove it if it exists, apply it if it doesn't
             if (g_mLayerNamespaceShaderMap.find(ns) != g_mLayerNamespaceShaderMap.end()) {
                 g_mLayerNamespaceShaderMap.erase(ns);
             } else {
                 g_mLayerNamespaceShaderMap[ns] = path;
+            }
+        }
+        return SDispatchResult{};
+    });
+
+    // --- CRITICAL FIX 57: ACTIVE WINDOW TOGGLE ---
+    HyprlandAPI::addDispatcherV2(PHANDLE, "togglewindowshader", [&](std::string path) -> SDispatchResult {
+        size_t start = path.find_first_not_of(" \t");
+        if (start != std::string::npos) path = path.substr(start);
+        while (!path.empty() && (path.back() == ' ' || path.back() == '\t')) path.pop_back();
+
+        if (path.empty()) return SDispatchResult{};
+
+        // --- THE FIX: ACTIVE WINDOW ---
+        // m_pLastWindow was removed in v0.54.2. We instead iterate through
+        // the active window list and ask the Compositor which one currently has focus.
+        PHLWINDOW pWindow = nullptr;
+        for (auto& w : g_pCompositor->m_windows) {
+            if (g_pCompositor->isWindowActive(w)) {
+                pWindow = w;
+                break;
+            }
+        }
+
+        if (pWindow) {
+            Desktop::View::CWindow* rawWin = pWindow.get();
+            
+            if (path == "clear" || path == "none") {
+                g_mWindowShaderMap.erase(rawWin);
+            } else if (g_mWindowShaderMap.find(rawWin) != g_mWindowShaderMap.end()) {
+                g_mWindowShaderMap.erase(rawWin);
+            } else {
+                g_mWindowShaderMap[rawWin] = path;
+            }
+            g_pHyprRenderer->damageWindow(pWindow);
+        }
+        return SDispatchResult{};
+    });
+
+    // --- CRITICAL FIX 58: APP CLASS DISPATCHERS ---
+    HyprlandAPI::addDispatcherV2(PHANDLE, "classshader", [&](std::string args) -> SDispatchResult {
+        size_t spacePos = args.find_first_of(" \t");
+        if (spacePos != std::string::npos) {
+            std::string cls = args.substr(0, spacePos);
+            std::string path = args.substr(spacePos + 1);
+            
+            size_t start = path.find_first_not_of(" \t");
+            if (start != std::string::npos) path = path.substr(start);
+            while (!path.empty() && (path.back() == ' ' || path.back() == '\t')) path.pop_back();
+
+            if (path == "clear" || path == "none") {
+                g_mWindowClassShaderMap.erase(cls);
+            } else {
+                g_mWindowClassShaderMap[cls] = path;
+            }
+
+            // Instantly redraw all open windows matching this class
+            for (auto& w : g_pCompositor->m_windows) {
+                if (w && (w->m_initialClass == cls || w->m_class == cls)) {
+                    g_pHyprRenderer->damageWindow(w);
+                }
+            }
+        }
+        return SDispatchResult{};
+    });
+
+    HyprlandAPI::addDispatcherV2(PHANDLE, "toggleclassshader", [&](std::string args) -> SDispatchResult {
+        size_t spacePos = args.find_first_of(" \t");
+        if (spacePos != std::string::npos) {
+            std::string cls = args.substr(0, spacePos);
+            std::string path = args.substr(spacePos + 1);
+            
+            size_t start = path.find_first_not_of(" \t");
+            if (start != std::string::npos) path = path.substr(start);
+            while (!path.empty() && (path.back() == ' ' || path.back() == '\t')) path.pop_back();
+
+            if (g_mWindowClassShaderMap.find(cls) != g_mWindowClassShaderMap.end()) {
+                g_mWindowClassShaderMap.erase(cls);
+            } else {
+                g_mWindowClassShaderMap[cls] = path;
+            }
+
+            // Instantly redraw all open windows matching this class
+            for (auto& w : g_pCompositor->m_windows) {
+                if (w && (w->m_initialClass == cls || w->m_class == cls)) {
+                    g_pHyprRenderer->damageWindow(w);
+                }
             }
         }
         return SDispatchResult{};
@@ -215,16 +322,26 @@ APICALL EXPORT void PLUGIN_EXIT() {
     // --- CRITICAL FIX 54: STRICT MEMORY UNLOADING ---
     g_mWindowShaderMap.clear();
     g_mLayerNamespaceShaderMap.clear();
-    g_mCompiledCShaders.clear();
+    g_mWindowClassShaderMap.clear(); 
+
+    // --- CRITICAL FIX 60: THE UNLOAD CRASH (GL CONTEXT) ---
+    // If we clear the CShader map normally, the CShader destructor calls glDeleteProgram().
+    // If the OpenGL context is not active during the exact millisecond of unload, 
+    // Hyprland silently catches a segfault and aborts the unload, keeping the old plugin locked!
+    // We intentionally leak the tiny shader pointers to the heap to bypass the GL crash.
+    auto leak = new std::map<std::string, Hyprutils::Memory::CSharedPointer<CShader>>(std::move(g_mCompiledCShaders));
+    (void)leak; // Suppress unused variable warning
 
     if (g_pGetSurfaceShaderHook) {
-        g_pGetSurfaceShaderHook->unhook();
+        // --- CRITICAL FIX 61: DOUBLE UNHOOK CRASH ---
+        // removeFunctionHook calls unhook() internally. Calling it twice can cause a crash!
         HyprlandAPI::removeFunctionHook(PHANDLE, g_pGetSurfaceShaderHook);
     }
 
     // --- CRITICAL FIX 55: DISPATCHER CLEANUP ---
-    // We MUST unregister our custom dispatchers. Otherwise, Hyprland holds 
-    // function pointers to our memory, completely blocking the unload process!
     HyprlandAPI::removeDispatcher(PHANDLE, "layershader");
     HyprlandAPI::removeDispatcher(PHANDLE, "togglelayershader");
+    HyprlandAPI::removeDispatcher(PHANDLE, "togglewindowshader");
+    HyprlandAPI::removeDispatcher(PHANDLE, "classshader");
+    HyprlandAPI::removeDispatcher(PHANDLE, "toggleclassshader");
 }
